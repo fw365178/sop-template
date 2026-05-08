@@ -370,6 +370,13 @@ input,textarea,select{font-family:inherit}
 .urow:last-child{border-bottom:none}
 .uav{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:#fff;flex-shrink:0}
 
+/* more menu dropdown */
+.more-wrap{position:relative}
+.more-menu{display:none;position:absolute;top:100%;right:0;background:#fff;border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);min-width:180px;padding:4px;z-index:200;margin-top:4px}
+.more-menu.show{display:block}
+.more-item{display:flex;align-items:center;gap:8px;width:100%;padding:8px 12px;border-radius:var(--rsm);font-size:13px;color:var(--text);cursor:pointer;border:none;background:none;font-family:inherit;text-align:left;white-space:nowrap;transition:.12s}
+.more-item:hover{background:var(--bg2)}
+
 /* help modal */
 .help-section{margin-bottom:8px;border:1px solid var(--border);border-radius:var(--rsm);overflow:hidden}
 .help-section summary{padding:10px 14px;font-weight:600;font-size:14px;cursor:pointer;background:var(--bg2);list-style:none}
@@ -504,16 +511,21 @@ input,textarea,select{font-family:inherit}
       <span id="userName"></span>
       <span style="font-size:10px;color:var(--text3)" id="logoutLabel">登出</span>
     </div>
-    <button class="tbtn" onclick="triggerNotionImport()" id="btnImport" style="display:none">📥 匯入 Notion</button>
-    <button class="tbtn" onclick="backupDocs()" id="btnBackup" style="display:none">💾 Backup</button>
-    <button class="tbtn" onclick="triggerRestore()" id="btnRestore" style="display:none">📂 Restore</button>
+    <div class="more-wrap" id="moreWrap">
+      <button class="tbtn" onclick="toggleMoreMenu()" id="btnMore">⋯</button>
+      <div class="more-menu" id="moreMenu">
+        <button class="more-item" onclick="triggerNotionImport();closeMoreMenu()" id="btnImport" style="display:none">📥 <span id="btnImportLabel">匯入 Notion</span></button>
+        <button class="more-item" onclick="backupDocs();closeMoreMenu()" id="btnBackup" style="display:none">💾 <span id="btnBackupLabel">備份</span></button>
+        <button class="more-item" onclick="triggerRestore();closeMoreMenu()" id="btnRestore" style="display:none">📂 <span id="btnRestoreLabel">還原</span></button>
+        <button class="more-item" onclick="openChangelog();closeMoreMenu()" id="btnChangelog" style="display:none">📋 <span id="btnChangelogLabel">更新日誌</span></button>
+        <button class="more-item" onclick="openTrash();closeMoreMenu()" id="btnTrash" style="display:none">🗑 <span id="btnTrashLabel">垃圾桶</span></button>
+      </div>
+    </div>
     <input type="file" id="notionImportInput" accept=".md,.markdown,.zip" style="display:none" onchange="importNotion(this)">
     <input type="file" id="restoreInput" accept=".json" style="display:none" onchange="restoreDocs(this)">
     <input type="file" id="coverInput" accept="image/*" style="display:none" onchange="onCoverUpload(this)">
-    <button class="tbtn" onclick="openChangelog()" id="btnChangelog" style="display:none">📋 更新日誌</button>
-    <button class="tbtn" onclick="openTrash()" id="btnTrash" style="display:none">🗑 垃圾桶</button>
-    <button class="tbtn" onclick="openHelp()" id="btnHelp">❓ Help</button>
-    <button class="tbtn" onclick="openSettings()" id="btnSettings">⚙ 設定</button>
+    <button class="tbtn" onclick="openHelp()" id="btnHelp">❓</button>
+    <button class="tbtn" onclick="openSettings()" id="btnSettings">⚙</button>
     <button class="tbtn on" onclick="toggleMode()" id="modeBtn" style="display:none">✏️ 編輯中</button>
     <button class="tbtn" onclick="forceSave()" id="btnSave" style="display:none" title="Force save to cloud">💾 Save</button>
   </div>
@@ -1006,14 +1018,14 @@ function applyLang() {
   setText('ndCancel', T.cancelBtn); setText('ndCreate', T.createBtn);
   setText('stTitle', T.stTitle); setText('stLangLabel', T.stLangLabel);
   setText('stClose', T.closeBtn);
-  // trash button
-  setText('btnTrash', lang==='en'?'🗑 Trash':'🗑 垃圾桶');
-  // help button
-  setText('btnHelp', T.helpBtn);
+  // more menu items (inner span labels)
+  setText('btnTrashLabel', lang==='en'?'Trash':'垃圾桶');
+  setText('btnImportLabel', lang==='en'?'Import Notion':'匯入 Notion');
+  setText('btnBackupLabel', lang==='en'?'Backup':'備份');
+  setText('btnRestoreLabel', lang==='en'?'Restore':'還原');
+  setText('btnChangelogLabel', lang==='en'?'Changelog':'更新日誌');
+  // help
   setText('helpTitle', T.helpTitle);
-  // backup/restore buttons
-  setText('btnBackup', T.backupBtn);
-  setText('btnRestore', T.restoreBtn);
   // drop overlay
   setText('dropText', T.dropText);
   setText('dropSub', T.dropSub);
@@ -1147,17 +1159,15 @@ function updateAccess() {
   setText('permLabel', currentUser.name + ' · ' + perm);
   setText('modeBtn', editMode ? T.editingBtn : T.viewBtn);
   document.getElementById('modeBtn').className = 'tbtn' + (editMode ? ' on' : '');
-  // Changelog + Import buttons: admin only
-  const clBtn = document.getElementById('btnChangelog');
-  if (clBtn) clBtn.style.display = canManageDocs() ? '' : 'none';
-  const impBtn = document.getElementById('btnImport');
-  if (impBtn) impBtn.style.display = canManageDocs() ? '' : 'none';
-  const trashBtn = document.getElementById('btnTrash');
-  if (trashBtn) trashBtn.style.display = canManageDocs() ? '' : 'none';
-  const backupBtn = document.getElementById('btnBackup');
-  if (backupBtn) backupBtn.style.display = canManageDocs() ? '' : 'none';
-  const restoreBtn = document.getElementById('btnRestore');
-  if (restoreBtn) restoreBtn.style.display = canManageDocs() ? '' : 'none';
+  // More menu items: admin only
+  const showManage = canManageDocs() ? 'flex' : 'none';
+  ['btnChangelog','btnImport','btnTrash','btnBackup','btnRestore'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = showManage;
+  });
+  // Show ⋯ button only if at least one item is visible
+  const moreWrap = document.getElementById('moreWrap');
+  if (moreWrap) moreWrap.style.display = canManageDocs() ? '' : 'none';
   const saveBtn = document.getElementById('btnSave');
   if (saveBtn) saveBtn.style.display = canEdit() ? '' : 'none';
 }
@@ -3470,6 +3480,9 @@ document.addEventListener('click',e=>{
   if(!e.target.closest('#slashMenu')&&!e.target.closest('[contenteditable]')){
     document.getElementById('slashMenu').classList.remove('show');
   }
+  if(!e.target.closest('.more-wrap')){
+    document.getElementById('moreMenu').classList.remove('show');
+  }
   if(!e.target.closest('#itbar'))setTimeout(()=>{if(!window.getSelection().toString())document.getElementById('itbar').classList.remove('show');},100);
 });
 
@@ -3481,6 +3494,13 @@ function openHelp() {
 }
 function closeHelp() {
   document.getElementById('helpModal').classList.remove('show');
+}
+
+function toggleMoreMenu() {
+  document.getElementById('moreMenu').classList.toggle('show');
+}
+function closeMoreMenu() {
+  document.getElementById('moreMenu').classList.remove('show');
 }
 
 // ═══════════════════════════════════════════════════════════
