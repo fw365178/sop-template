@@ -1249,7 +1249,9 @@ function confirmNewDoc() {
 function getDoc() { return docs.find(d=>d.id===activeId); }
 
 function renderDoc() {
+  if (!getDoc() && docs.length) activeId = docs[0].id;
   const doc = getDoc();
+  if (!doc) return;
   renderCover(doc);
   document.getElementById('docTitle').value = doc.name;
   document.getElementById('docTitle').readOnly = !editMode||!canEdit();
