@@ -52,6 +52,7 @@ input,textarea,select{font-family:inherit}
 .tbtn:hover{background:var(--bg2);border-color:var(--border)}
 .tbtn.on{background:var(--accent);color:#fff;border-color:var(--accent)}
 .tbtn.on:hover{background:#1d4ed8}
+.tbtn:disabled{opacity:.38;cursor:not-allowed;pointer-events:none}
 .sbox{display:flex;align-items:center;gap:6px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--rsm);padding:5px 10px;cursor:pointer;transition:.15s}
 .sbox:hover{border-color:var(--border2)}
 .sbox span{font-size:13px;color:var(--text3);white-space:nowrap}
@@ -527,6 +528,8 @@ input,textarea,select{font-family:inherit}
     <button class="tbtn" onclick="openHelp()" id="btnHelp">❓</button>
     <button class="tbtn" onclick="openSettings()" id="btnSettings">⚙</button>
     <button class="tbtn on" onclick="toggleMode()" id="modeBtn" style="display:none">✏️ 編輯中</button>
+    <button class="tbtn" onclick="undoEdit()" id="btnUndo" style="display:none" title="復原 (Ctrl+Z)" disabled>↩ 復原</button>
+    <button class="tbtn" onclick="redoEdit()" id="btnRedo" style="display:none" title="取消復原 (Ctrl+Y)" disabled>↪ 取消復原</button>
     <button class="tbtn" onclick="forceSave()" id="btnSave" style="display:none" title="Force save to cloud">💾 Save</button>
   </div>
 </div>
@@ -919,6 +922,9 @@ const AVCOLS = ['#2563eb','#16a34a','#0891b2','#9333ea','#d97706','#dc2626','#db
 let activeId = 1;
 let editMode = false;
 let currentUser = null;
+let _undoStack = [], _redoStack = [];
+let _editDirty = false, _preEditSnap = null;
+const MAX_UNDO = 50;
 let ctxBlockId = null;
 let pendingImgId = null;
 let slashCtx = null;
@@ -1127,12 +1133,82 @@ function updateAccess() {
   if (moreWrap) moreWrap.style.display = canManageDocs() ? '' : 'none';
   const saveBtn = document.getElementById('btnSave');
   if (saveBtn) saveBtn.style.display = canEdit() ? '' : 'none';
+  const undoBtn = document.getElementById('btnUndo'), redoBtn = document.getElementById('btnRedo');
+  if (undoBtn) undoBtn.style.display = (edit && editMode) ? '' : 'none';
+  if (redoBtn) redoBtn.style.display = (edit && editMode) ? '' : 'none';
+  updateUndoRedoBtns();
 }
 
 function toggleMode() {
   if (!canEdit()) return;
   editMode = !editMode;
+  if (!editMode) { _undoStack=[]; _redoStack=[]; _editDirty=false; _preEditSnap=null; }
   updateAccess(); renderDoc();
+}
+
+// ── UNDO / REDO ──────────────────────────────────────────────────────────────
+function _docSnapshot() {
+  const doc = getDoc(); if (!doc) return null;
+  return { docId: doc.id, state: JSON.parse(JSON.stringify(doc)) };
+}
+
+// Called on focus of any contenteditable — commits previous edit session to undo stack
+function onEditFocus() {
+  if (!editMode || !canEdit()) return;
+  if (_editDirty && _preEditSnap) {
+    _undoStack.push(_preEditSnap);
+    if (_undoStack.length > MAX_UNDO) _undoStack.shift();
+    _redoStack = [];
+    updateUndoRedoBtns();
+    _editDirty = false;
+  }
+  _preEditSnap = _docSnapshot();
+}
+
+// Called before structural changes (add/delete block) — pushes current state before change
+function pushUndoSnapshot() {
+  if (!editMode || !canEdit()) return;
+  // Flush any in-progress edit session first
+  if (_editDirty && _preEditSnap) {
+    _undoStack.push(_preEditSnap);
+    if (_undoStack.length > MAX_UNDO) _undoStack.shift();
+    _editDirty = false;
+  }
+  const snap = _docSnapshot(); if (!snap) return;
+  _undoStack.push(snap);
+  if (_undoStack.length > MAX_UNDO) _undoStack.shift();
+  _redoStack = []; _preEditSnap = null;
+  updateUndoRedoBtns();
+}
+
+function applyUndoRedoState(snap) {
+  const idx = docs.findIndex(d => d.id === snap.docId); if (idx < 0) return;
+  docs[idx] = JSON.parse(JSON.stringify(snap.state));
+  activeId = snap.docId; _editDirty = false; _preEditSnap = null;
+  renderTabs(); renderDoc(); save();
+}
+
+function undoEdit() {
+  if (!_undoStack.length || !editMode) return;
+  // Flush any uncommitted edit session into redo
+  if (_editDirty && _preEditSnap) { _redoStack.push(_preEditSnap); _editDirty=false; }
+  const cur = _docSnapshot(); if (cur) _redoStack.push(cur);
+  applyUndoRedoState(_undoStack.pop());
+  updateUndoRedoBtns();
+}
+
+function redoEdit() {
+  if (!_redoStack.length || !editMode) return;
+  const cur = _docSnapshot(); if (cur) { _undoStack.push(cur); if(_undoStack.length>MAX_UNDO)_undoStack.shift(); }
+  _preEditSnap = null; _editDirty = false;
+  applyUndoRedoState(_redoStack.pop());
+  updateUndoRedoBtns();
+}
+
+function updateUndoRedoBtns() {
+  const u = document.getElementById('btnUndo'), r = document.getElementById('btnRedo');
+  if (u) u.disabled = !_undoStack.length;
+  if (r) r.disabled = !_redoStack.length;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1161,7 +1237,7 @@ function renderTabs() {
   });
 }
 
-function switchDoc(id) { activeId=id; renderTabs(); renderDoc(); }
+function switchDoc(id) { activeId=id; _undoStack=[]; _redoStack=[]; _editDirty=false; _preEditSnap=null; updateUndoRedoBtns(); renderTabs(); renderDoc(); }
 
 function closeTab(e, id) {
   e.stopPropagation();
@@ -1428,6 +1504,7 @@ function renderUploadTab(body) {
 
 function onTitleInput() {
   if (!canEdit()) return;
+  _editDirty = true;
   getDoc().name = document.getElementById('docTitle').value;
   renderTabs(); save('renameDoc', getDoc().name);
 }
@@ -2144,6 +2221,7 @@ function insertAfter(id, type) {
   const doc=getDoc();
   const arr = findParentArray(id); if (!arr) return;
   const idx = arr.findIndex(b=>b.id===id); if(idx<0) return;
+  pushUndoSnapshot();
   const nb=makeNewBlock(type); arr.splice(idx+1,0,nb); renderDoc();
   const T=L(); autoLog('addBlock', doc.name, (T.blocks[type]||{t:type}).t);
   setTimeout(()=>{const el=document.querySelector('#blk-'+nb.id+' [contenteditable]');if(el){el.focus();caretEnd(el);}},50);
@@ -2154,6 +2232,7 @@ function insertBefore(id, type) {
   const doc=getDoc();
   const arr = findParentArray(id); if (!arr) return;
   const idx = arr.findIndex(b=>b.id===id); if(idx<0) return;
+  pushUndoSnapshot();
   const nb=makeNewBlock(type); arr.splice(idx,0,nb); renderDoc();
   const T=L(); autoLog('addBlock', doc.name, (T.blocks[type]||{t:type}).t);
   setTimeout(()=>{const el=document.querySelector('#blk-'+nb.id+' [contenteditable]');if(el){el.focus();caretEnd(el);}},50);
@@ -2166,6 +2245,7 @@ function deleteBlock(id) {
   const idx = arr.findIndex(b=>b.id===id); if(idx<0) return;
   // 頂層最後一個區塊不可刪
   if (arr === doc.blocks && arr.length <= 1) return;
+  pushUndoSnapshot();
   const blk = arr[idx];
   const delText = plainText(blk.content||blk.label||
     (blk.items ? (Array.isArray(blk.items[0])?blk.items[0].text:blk.items[0])||'' : '')||'');
@@ -3429,6 +3509,22 @@ function compressImage(dataUrl, maxWidth, quality) {
 document.addEventListener('keydown',e=>{
   if((e.ctrlKey||e.metaKey)&&e.key==='k'){e.preventDefault();openSearch();}
   if(e.key==='Escape')hideAllMenus();
+  // App-level undo/redo (only when not typing inside a contenteditable)
+  if((e.ctrlKey||e.metaKey)&&!e.shiftKey&&e.key==='z'&&document.activeElement?.contentEditable!=='true'){
+    e.preventDefault(); undoEdit();
+  }
+  if((e.ctrlKey||e.metaKey)&&(e.key==='y'||(e.shiftKey&&e.key==='z'))&&document.activeElement?.contentEditable!=='true'){
+    e.preventDefault(); redoEdit();
+  }
+});
+// Focus delegation: commit the previous edit session to undo stack when user moves to a new field
+document.addEventListener('focusin', e=>{
+  if (e.target.isContentEditable && editMode && canEdit()) onEditFocus();
+});
+document.getElementById('docTitle').addEventListener('focus', ()=>{ if(editMode&&canEdit()) onEditFocus(); });
+// Mark dirty whenever any block content changes
+document.addEventListener('input', e=>{
+  if (e.target.isContentEditable && editMode) _editDirty = true;
 });
 document.addEventListener('click',e=>{
   if(!e.target.closest('.menu')&&!e.target.closest('#addMenu')&&!e.target.closest('#slashMenu')){
