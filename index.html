@@ -878,6 +878,7 @@ let lang = localStorage.getItem('sop_lang') || 'en';
 const L = () => I18N[lang];
 
 let docs = [];
+let _dataReady = false;
 
 const FIXED_USERS = [
   {id:1, name:'Admin',   role:'admin',  color:'#2563eb', pw:'592365'},
@@ -887,7 +888,7 @@ const FIXED_USERS = [
 let users = FIXED_USERS;
 const AVCOLS = ['#2563eb','#16a34a','#0891b2','#9333ea','#d97706','#dc2626','#db2777'];
 
-let activeId = 1;
+let activeId = null;
 let editMode = false;
 let currentUser = null;
 let _undoStack = [], _redoStack = [];
@@ -1059,6 +1060,8 @@ function doLoginAs(uid) {
   document.getElementById('userAv').textContent = currentUser.name[0];
   document.getElementById('userName').textContent = currentUser.name;
   editMode = canEdit();
+  // Always ensure activeId points to a valid doc
+  if (!docs.find(d => d.id === activeId) && docs.length) activeId = docs[0].id;
   updateAccess(); renderTabs(); renderDoc();
   applyLang();
 }
@@ -3617,6 +3620,9 @@ function init(){
   setText('stext', L().saved);
   document.getElementById('sdot').style.background='#22c55e';
 
+  // Show loading state on login screen while data loads
+  document.getElementById('loginList').innerHTML = '<div style="text-align:center;padding:20px;color:var(--text3)">載入中...</div>';
+
   if(window.fbDb){
     Promise.all([
       window.fbDb.ref('sop_docs').once('value'),
@@ -3675,6 +3681,8 @@ function init(){
       if (!docs.length) {
         docs = [{ id: Date.now(), name: 'New Document', blocks:[{id:1,type:'text',content:''}] }];
       }
+      activeId = docs[0].id;
+      _dataReady = true;
 
       renderLogin();
 
@@ -3704,6 +3712,8 @@ function init(){
       try{const c=localStorage.getItem('sop_changelog');if(c)changelog=JSON.parse(c);}catch(e){}
       try{const t=localStorage.getItem('sop_trash');if(t)trash=JSON.parse(t);}catch(e){}
       if (!docs.length) docs = [{ id: Date.now(), name: 'New Document', blocks:[{id:1,type:'text',content:''}] }];
+      activeId = docs[0].id;
+      _dataReady = true;
       renderLogin();
     });
   } else {
@@ -3711,6 +3721,8 @@ function init(){
     try{const c=localStorage.getItem('sop_changelog');if(c)changelog=JSON.parse(c);}catch(e){}
     try{const t=localStorage.getItem('sop_trash');if(t)trash=JSON.parse(t);}catch(e){}
     if (!docs.length) docs = [{ id: Date.now(), name: 'New Document', blocks:[{id:1,type:'text',content:''}] }];
+    activeId = docs[0].id;
+    _dataReady = true;
     renderLogin();
   }
 }
