@@ -877,46 +877,7 @@ const I18N = {
 let lang = localStorage.getItem('sop_lang') || 'en';
 const L = () => I18N[lang];
 
-let docs = [
-  { id:1, name:'設備操作 SOP', blocks:[
-    {id:1,type:'h1',content:'設備操作標準程序'},
-    {id:2,type:'callout',content:'⚠️ 操作前請確認已完成安全訓練',bg:'yellow'},
-    {id:3,type:'h2',content:'一、開機前準備'},
-    {id:4,type:'collapse',label:'1.1 環境確認',open:true,children:[
-      {id:41,type:'text',content:'確認操作區域無雜物，走道保持暢通。'},
-      {id:42,type:'text',content:'檢查緊急停機按鈕位置，確認滅火器在有效日期內。'}
-    ]},
-    {id:5,type:'h2',content:'二、開機程序'},
-    {id:6,type:'bullet',content:'確認主電源開關為 OFF 狀態'},
-    {id:7,type:'bullet',content:'插上電源線，確認接地正常'},
-    {id:8,type:'ordered',items:['按下啟動按鈕','等待系統自檢（約 30 秒）','確認指示燈全綠']},
-    {id:9,type:'h2',content:'三、異常處理'},
-    {id:10,type:'checklist',items:[{text:'確認錯誤代碼',done:false},{text:'查閱手冊',done:false},{text:'通報負責人',done:true}]},
-    {id:11,type:'h2',content:'四、常見案例'},
-    {id:12,type:'togglelist',items:[
-      {id:121,text:'Bonus Abuse',open:true,children:[
-        {id:1211,text:'Free Game Abuse (PG, NextSpin)',open:false,children:[]},
-        {id:1212,text:'Sports Betting Abuse (BTi, Cricket)',open:true,children:[
-          {id:12121,text:'單場投注異常',open:false,children:[]},
-          {id:12122,text:'串關套利',open:false,children:[]}
-        ]}
-      ]},
-      {id:122,text:'帳號共用',open:false,children:[
-        {id:1221,text:'IP 重疊超過 3 筆',open:false,children:[]}
-      ]}
-    ]},
-  ]},
-  { id:2, name:'品質檢驗 SOP', blocks:[
-    {id:1,type:'h1',content:'品質檢驗作業規範'},
-    {id:2,type:'text',content:'本規範適用於所有成品出貨前之品質確認作業。'},
-    {id:3,type:'h2',content:'一、外觀檢驗'},
-    {id:4,type:'text',content:'使用 2000lux 標準光源，依照缺陷分類標準逐一確認。'},
-  ]},
-  { id:3, name:'新人入職流程', blocks:[
-    {id:1,type:'h1',content:'新人入職作業流程'},
-    {id:2,type:'checklist',items:[{text:'完成人事文件',done:true},{text:'領取識別證',done:true},{text:'安全訓練',done:false},{text:'系統帳號申請',done:false}]},
-  ]}
-];
+let docs = [];
 
 const FIXED_USERS = [
   {id:1, name:'Admin',   role:'admin',  color:'#2563eb', pw:'592365'},
@@ -3710,6 +3671,11 @@ function init(){
         }).catch(e => console.warn('Migration issue:', e));
       }
 
+      // If Firebase had no docs at all, create a blank starter doc
+      if (!docs.length) {
+        docs = [{ id: Date.now(), name: 'New Document', blocks:[{id:1,type:'text',content:''}] }];
+      }
+
       renderLogin();
 
       // 即時監聽其他人的變更 — per-doc sync
@@ -3737,13 +3703,14 @@ function init(){
       try{const s=localStorage.getItem('sop_docs');if(s)docs=JSON.parse(s);}catch(e){}
       try{const c=localStorage.getItem('sop_changelog');if(c)changelog=JSON.parse(c);}catch(e){}
       try{const t=localStorage.getItem('sop_trash');if(t)trash=JSON.parse(t);}catch(e){}
-
+      if (!docs.length) docs = [{ id: Date.now(), name: 'New Document', blocks:[{id:1,type:'text',content:''}] }];
       renderLogin();
     });
   } else {
     try{const s=localStorage.getItem('sop_docs');if(s)docs=JSON.parse(s);}catch(e){}
     try{const c=localStorage.getItem('sop_changelog');if(c)changelog=JSON.parse(c);}catch(e){}
     try{const t=localStorage.getItem('sop_trash');if(t)trash=JSON.parse(t);}catch(e){}
+    if (!docs.length) docs = [{ id: Date.now(), name: 'New Document', blocks:[{id:1,type:'text',content:''}] }];
     renderLogin();
   }
 }
