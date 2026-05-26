@@ -3615,90 +3615,87 @@ function toggleSidebar() {
 // ═══════════════════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════════════════
+function parseDocsRaw(raw) {
+  if (!raw) return [];
+  if (typeof raw === 'object' && !Array.isArray(raw)) {
+    return Object.values(raw).filter(x => x && x.id && x.name);
+  }
+  if (Array.isArray(raw)) return raw.filter(x => x != null && x.id && x.name);
+  return [];
+}
+
+function finishInit() {
+  if (!docs.length) {
+    docs = [{ id: Date.now(), name: 'New Document', blocks:[{id:1,type:'text',content:''}] }];
+  }
+  activeId = docs[0].id;
+  _dataReady = true;
+  renderLogin();
+}
+
+// REST API fallback loader — works even when Firebase SDK fails
+function loadViaRest() {
+  console.log('Loading data via REST API fallback...');
+  return fetch(FB_REST + '/sop_docs.json').then(r => r.json()).then(raw => {
+    const arr = parseDocsRaw(raw);
+    if (arr.length) docs = arr;
+  }).catch(e => console.warn('REST load failed:', e));
+}
+
 function init(){
   applyLang(); buildColorGrids(); buildSlashMenu();
   setText('stext', L().saved);
   document.getElementById('sdot').style.background='#22c55e';
 
   // Show loading state on login screen while data loads
-  document.getElementById('loginList').innerHTML = '<div style="text-align:center;padding:20px;color:var(--text3)">載入中...</div>';
+  document.getElementById('loginList').innerHTML = '<div style="text-align:center;padding:20px;color:var(--text3)">載入中... Loading...</div>';
 
   if(window.fbDb){
-    Promise.all([
+    // Race: try Firebase SDK with 6s timeout, fallback to REST API
+    let loaded = false;
+
+    const sdkLoad = Promise.all([
       window.fbDb.ref('sop_docs').once('value'),
       window.fbDb.ref('sop_changelog').once('value'),
       window.fbDb.ref('sop_trash').once('value')
     ]).then(([docsSnap, clSnap, trashSnap])=>{
-      // sop_docs: supports both old array format and new object-keyed format
+      if (loaded) return; // REST already finished
+      loaded = true;
       const raw = docsSnap.val();
-      let needsMigration = false;
-      if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-        // Check if it's already migrated (keys are doc ids) or still array-like (numeric keys)
-        const keys = Object.keys(raw);
-        const hasNumericKeys = keys.length > 0 && keys.every(k => /^\d+$/.test(k) && Number(k) < 1000);
-        if (hasNumericKeys) {
-          // Old array stored as sparse object with small numeric indices
-          const arr = Object.values(raw).filter(x => x && x.id && x.name);
-          if (arr.length) { docs = arr; needsMigration = true; }
-        } else {
-          const arr = Object.values(raw).filter(x => x && x.id && x.name);
-          if (arr.length) docs = arr;
-        }
-      } else if (Array.isArray(raw)) {
-        const fa = raw.filter(x => x != null && x.id && x.name);
-        if (fa.length) { docs = fa; needsMigration = true; }
-      }
+      const arr = parseDocsRaw(raw);
+      if (arr.length) docs = arr;
       const ca = toArr(clSnap.val());  if(ca&&ca.length) changelog = ca;
       const ta = toArr(trashSnap.val()); if(ta&&ta.length) trash = ta;
+    });
 
-      // One-time migration: convert array to per-doc keyed format
-      if (needsMigration && docs.length) {
-        // Write each doc individually; use REST fallback for large docs
-        const writes = docs.filter(d=>d&&d.id).map(d =>
-          window.fbDb.ref('sop_docs/' + d.id).set(d).catch(() =>
-            fbRestPut('sop_docs/' + d.id, d)
-          )
-        );
-        Promise.all(writes).then(() => {
-          // Remove old numeric-indexed entries (0, 1, 2, ...)
-          return window.fbDb.ref('sop_docs').once('value');
-        }).then(snap => {
-          const val = snap.val();
-          if (!val) return;
-          const removes = {};
-          Object.keys(val).forEach(k => {
-            if (/^\d+$/.test(k) && Number(k) < 1000) removes[k] = null;
-          });
-          if (Object.keys(removes).length) {
-            return window.fbDb.ref('sop_docs').update(removes);
-          }
-        }).then(() => {
-          console.log('Migrated sop_docs to per-doc format:', docs.length, 'docs');
-        }).catch(e => console.warn('Migration issue:', e));
-      }
+    // Timeout: if SDK takes >6s, try REST API
+    const timeout = new Promise(resolve => setTimeout(() => {
+      if (!loaded) {
+        console.warn('Firebase SDK timeout, trying REST API...');
+        loadViaRest().then(resolve);
+      } else resolve();
+    }, 6000));
 
-      // If Firebase had no docs at all, create a blank starter doc
+    Promise.race([sdkLoad, timeout]).then(() => {
+      loaded = true;
+      // Also try REST if SDK returned no docs (possible SDK issue)
+      if (!docs.length) return loadViaRest();
+    }).then(() => {
+      // Also try localStorage as last resort
       if (!docs.length) {
-        docs = [{ id: Date.now(), name: 'New Document', blocks:[{id:1,type:'text',content:''}] }];
+        try{const s=localStorage.getItem('sop_docs');if(s){const p=JSON.parse(s);if(Array.isArray(p)&&p.length)docs=p;}}catch(e){}
       }
-      activeId = docs[0].id;
-      _dataReady = true;
 
-      renderLogin();
+      finishInit();
 
-      // 即時監聽其他人的變更 — per-doc sync
+      // Setup real-time sync listeners
       let skip = true;
       window.fbDb.ref('sop_docs').on('value', snap=>{
         if(skip){ skip=false; return; }
         const val = snap.val();
         if (!val) return;
-        let arr;
-        if (typeof val === 'object' && !Array.isArray(val)) {
-          arr = Object.values(val).filter(x => x && x.id && x.name);
-        } else {
-          arr = toArr(val);
-        }
-        if(!arr||!arr.length) return;
+        const arr = parseDocsRaw(val);
+        if(!arr.length) return;
         docs = arr; renderTabs(); renderDoc();
       });
       window.fbDb.ref('sop_changelog').on('value', snap=>{
@@ -3708,22 +3705,25 @@ function init(){
         const t = toArr(snap.val()); trash = t && t.length ? t : [];
       });
     }).catch(()=>{
-      try{const s=localStorage.getItem('sop_docs');if(s)docs=JSON.parse(s);}catch(e){}
-      try{const c=localStorage.getItem('sop_changelog');if(c)changelog=JSON.parse(c);}catch(e){}
-      try{const t=localStorage.getItem('sop_trash');if(t)trash=JSON.parse(t);}catch(e){}
-      if (!docs.length) docs = [{ id: Date.now(), name: 'New Document', blocks:[{id:1,type:'text',content:''}] }];
-      activeId = docs[0].id;
-      _dataReady = true;
-      renderLogin();
+      // Everything failed — try REST, then localStorage
+      loadViaRest().then(() => {
+        if (!docs.length) {
+          try{const s=localStorage.getItem('sop_docs');if(s){const p=JSON.parse(s);if(Array.isArray(p)&&p.length)docs=p;}}catch(e){}
+        }
+        finishInit();
+      });
     });
   } else {
-    try{const s=localStorage.getItem('sop_docs');if(s)docs=JSON.parse(s);}catch(e){}
-    try{const c=localStorage.getItem('sop_changelog');if(c)changelog=JSON.parse(c);}catch(e){}
-    try{const t=localStorage.getItem('sop_trash');if(t)trash=JSON.parse(t);}catch(e){}
-    if (!docs.length) docs = [{ id: Date.now(), name: 'New Document', blocks:[{id:1,type:'text',content:''}] }];
-    activeId = docs[0].id;
-    _dataReady = true;
-    renderLogin();
+    // No Firebase SDK — try REST API first, then localStorage
+    loadViaRest().then(() => {
+      if (!docs.length) {
+        try{const s=localStorage.getItem('sop_docs');if(s){const p=JSON.parse(s);if(Array.isArray(p)&&p.length)docs=p;}}catch(e){}
+      }
+      finishInit();
+    }).catch(() => {
+      try{const s=localStorage.getItem('sop_docs');if(s){const p=JSON.parse(s);if(Array.isArray(p)&&p.length)docs=p;}}catch(e){}
+      finishInit();
+    });
   }
 }
 init();
