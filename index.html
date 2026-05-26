@@ -3636,10 +3636,25 @@ function finishInit() {
 // REST API fallback loader — works even when Firebase SDK fails
 function loadViaRest() {
   console.log('Loading data via REST API fallback...');
-  return fetch(FB_REST + '/sop_docs.json').then(r => r.json()).then(raw => {
+  return fetch(FB_REST + '/sop_docs.json').then(r => {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }).then(raw => {
     const arr = parseDocsRaw(raw);
-    if (arr.length) docs = arr;
-  }).catch(e => console.warn('REST load failed:', e));
+    if (arr.length) { docs = arr; console.log('REST loaded', arr.length, 'docs'); }
+    else console.warn('REST returned empty data');
+  }).catch(e => { console.warn('REST load failed:', e); throw e; });
+}
+
+function showLoadError(detail) {
+  const el = document.getElementById('loginList');
+  if (!el) return;
+  el.innerHTML = '<div style="text-align:center;padding:20px">' +
+    '<div style="color:#dc2626;font-weight:600;margin-bottom:8px">⚠ Failed to load data</div>' +
+    '<div style="color:var(--text3);font-size:13px;margin-bottom:12px">Error: ' + (detail||'Unknown') + '</div>' +
+    '<button onclick="location.reload()" style="padding:8px 20px;border-radius:6px;border:1px solid var(--border);cursor:pointer;font-size:13px;background:#fff">🔄 Retry</button>' +
+    '<div style="color:var(--text3);font-size:11px;margin-top:12px">If this keeps happening, check your network or try a different Wi-Fi/network.</div>' +
+    '</div>';
 }
 
 function init(){
@@ -3676,16 +3691,15 @@ function init(){
       } else resolve();
     }, 6000));
 
-    Promise.race([sdkLoad, timeout]).then(() => {
-      loaded = true;
-      // Also try REST if SDK returned no docs (possible SDK issue)
-      if (!docs.length) return loadViaRest();
-    }).then(() => {
-      // Also try localStorage as last resort
+    function tryFinishWithListeners() {
+      // Try localStorage as absolute last resort
       if (!docs.length) {
         try{const s=localStorage.getItem('sop_docs');if(s){const p=JSON.parse(s);if(Array.isArray(p)&&p.length)docs=p;}}catch(e){}
       }
-
+      if (!docs.length) {
+        showLoadError('Could not reach Firebase. SDK and REST API both failed.');
+        return;
+      }
       finishInit();
 
       // Setup real-time sync listeners
@@ -3704,25 +3718,35 @@ function init(){
       window.fbDb.ref('sop_trash').on('value', snap=>{
         const t = toArr(snap.val()); trash = t && t.length ? t : [];
       });
-    }).catch(()=>{
-      // Everything failed — try REST, then localStorage
+    }
+
+    Promise.race([sdkLoad, timeout]).then(() => {
+      loaded = true;
+      if (!docs.length) return loadViaRest().catch(()=>{});
+    }).then(() => {
+      tryFinishWithListeners();
+    }).catch((err)=>{
+      console.warn('SDK failed:', err);
+      // SDK failed — try REST
       loadViaRest().then(() => {
-        if (!docs.length) {
-          try{const s=localStorage.getItem('sop_docs');if(s){const p=JSON.parse(s);if(Array.isArray(p)&&p.length)docs=p;}}catch(e){}
-        }
-        finishInit();
+        tryFinishWithListeners();
+      }).catch(() => {
+        tryFinishWithListeners(); // will show error if still no docs
       });
     });
   } else {
-    // No Firebase SDK — try REST API first, then localStorage
+    // No Firebase SDK loaded — try REST API, then localStorage
+    console.warn('Firebase SDK not available, using REST API');
     loadViaRest().then(() => {
       if (!docs.length) {
         try{const s=localStorage.getItem('sop_docs');if(s){const p=JSON.parse(s);if(Array.isArray(p)&&p.length)docs=p;}}catch(e){}
       }
-      finishInit();
+      if (docs.length) finishInit();
+      else showLoadError('Firebase SDK failed to load and REST API returned no data.');
     }).catch(() => {
       try{const s=localStorage.getItem('sop_docs');if(s){const p=JSON.parse(s);if(Array.isArray(p)&&p.length)docs=p;}}catch(e){}
-      finishInit();
+      if (docs.length) finishInit();
+      else showLoadError('All data sources failed. Please check your internet connection.');
     });
   }
 }
