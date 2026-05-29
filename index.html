@@ -524,6 +524,7 @@ input,textarea,select{font-family:inherit}
         <button class="more-item" onclick="triggerNotionImport();closeMoreMenu()" id="btnImport" style="display:none">📥 <span id="btnImportLabel">匯入 Notion</span></button>
         <button class="more-item" onclick="backupDocs();closeMoreMenu()" id="btnBackup" style="display:none">💾 <span id="btnBackupLabel">備份</span></button>
         <button class="more-item" onclick="triggerRestore();closeMoreMenu()" id="btnRestore" style="display:none">📂 <span id="btnRestoreLabel">還原</span></button>
+        <button class="more-item" onclick="exportDataJson();closeMoreMenu()" id="btnExport" style="display:none">📤 <span id="btnExportLabel">匯出備援 data.json</span></button>
         <button class="more-item" onclick="openChangelog();closeMoreMenu()" id="btnChangelog" style="display:none">📋 <span id="btnChangelogLabel">更新日誌</span></button>
         <button class="more-item" onclick="openTrash();closeMoreMenu()" id="btnTrash" style="display:none">🗑 <span id="btnTrashLabel">垃圾桶</span></button>
       </div>
@@ -879,6 +880,10 @@ const L = () => I18N[lang];
 
 let docs = [];
 let _dataReady = false;
+let _dataSource = '';      // 'firebase' | 'backup' | 'cache'
+let _readOnly = false;     // true when not connected to Firebase (backup/cache mode)
+let _dataSettled = false;  // becomes true once the freshest source has been determined
+let _listenersOn = false;
 
 const FIXED_USERS = [
   {id:1, name:'Admin',   role:'admin',  color:'#2563eb', pw:'592365'},
@@ -956,6 +961,7 @@ function applyLang() {
   setText('btnImportLabel', lang==='en'?'Import Notion':'匯入 Notion');
   setText('btnBackupLabel', lang==='en'?'Backup':'備份');
   setText('btnRestoreLabel', lang==='en'?'Restore':'還原');
+  setText('btnExportLabel', lang==='en'?'Export backup data.json':'匯出備援 data.json');
   setText('btnChangelogLabel', lang==='en'?'Changelog':'更新日誌');
   // help button (icon only, no label to set)
   // drop overlay
@@ -1064,6 +1070,7 @@ function doLoginAs(uid) {
   if (!docs.find(d => d.id === activeId) && docs.length) activeId = docs[0].id;
   updateAccess(); renderTabs(); renderDoc();
   applyLang();
+  paintDataBadge();
 }
 // keep old name for any references
 function loginAs(uid){doLoginAs(uid);}
@@ -1076,7 +1083,7 @@ function logoutUser() {
   setTimeout(()=>{document.getElementById('pwInput').value='';document.getElementById('pwError').textContent='';},100);
 }
 
-function canEdit() { return currentUser && (currentUser.role==='admin'||currentUser.role==='editor'); }
+function canEdit() { return currentUser && (currentUser.role==='admin'||currentUser.role==='editor') && !_readOnly; }
 function canManageDocs() { return currentUser && currentUser.role==='admin'; }
 
 function updateAccess() {
@@ -1095,7 +1102,7 @@ function updateAccess() {
   document.getElementById('modeBtn').className = 'tbtn' + (editMode ? ' on' : '');
   // More menu items: admin only
   const showManage = canManageDocs() ? 'flex' : 'none';
-  ['btnChangelog','btnImport','btnTrash','btnBackup','btnRestore'].forEach(id => {
+  ['btnChangelog','btnImport','btnTrash','btnBackup','btnRestore','btnExport'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.display = showManage;
   });
@@ -3408,6 +3415,22 @@ function backupDocs() {
   URL.revokeObjectURL(url);
 }
 
+// Export the same-origin backup file (data.json) for uploading to GitHub.
+// This is what employees see when their network/device blocks Firebase.
+function exportDataJson() {
+  if (!canManageDocs()) return;
+  const payload = { updatedAt: new Date().toISOString(), docs: docs, changelog: changelog, trash: trash };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'data.json';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  alert(lang==='en'
+    ? 'data.json downloaded. Upload it to the GitHub repo root (overwrite the old one). This is the read-only copy employees see when Firebase is blocked.'
+    : '已下載 data.json。請上傳到 GitHub 倉庫根目錄(覆蓋舊的)。這就是 Firebase 被擋時,員工會看到的唯讀備援內容。');
+}
+
 function triggerRestore() {
   if (!canManageDocs()) return;
   const inp = document.getElementById('restoreInput');
@@ -3628,12 +3651,29 @@ function finishInit() {
   if (!docs.length) {
     docs = [{ id: Date.now(), name: 'New Document', blocks:[{id:1,type:'text',content:''}] }];
   }
-  activeId = docs[0].id;
+  if (!docs.find(d => d.id === activeId)) activeId = docs[0].id;
   _dataReady = true;
-  renderLogin();
+  if (currentUser) { updateAccess(); renderTabs(); renderDoc(); }
+  else renderLogin();
+  paintDataBadge();
 }
 
-// REST API fallback loader — works even when Firebase SDK fails
+// ② Local cache — instant first paint + offline safety net
+function saveCache() {
+  try {
+    localStorage.setItem('sop_docs', JSON.stringify(docs));
+    localStorage.setItem('sop_cache_time', String(Date.now()));
+  } catch(e) {}
+}
+function loadFromCache() {
+  try {
+    const s = localStorage.getItem('sop_docs');
+    if (s) { const p = JSON.parse(s); if (Array.isArray(p) && p.length) { docs = p; return true; } }
+  } catch(e) {}
+  return false;
+}
+
+// REST API fallback — same Firebase domain, different transport (helps if only WebSocket is blocked)
 function loadViaRest() {
   console.log('Loading data via REST API fallback...');
   return fetch(FB_REST + '/sop_docs.json').then(r => {
@@ -3641,9 +3681,43 @@ function loadViaRest() {
     return r.json();
   }).then(raw => {
     const arr = parseDocsRaw(raw);
-    if (arr.length) { docs = arr; console.log('REST loaded', arr.length, 'docs'); }
-    else console.warn('REST returned empty data');
-  }).catch(e => { console.warn('REST load failed:', e); throw e; });
+    if (!arr.length) throw new Error('REST returned empty data');
+    docs = arr; console.log('REST loaded', arr.length, 'docs');
+  });
+}
+
+// ① Same-origin backup — ./data.json sits on the SAME GitHub domain as this page.
+//    A network/device that already loaded this app CANNOT block it. Read-only fallback.
+function loadViaBackup() {
+  console.log('Loading data via same-origin backup (data.json)...');
+  return fetch('./data.json?t=' + Date.now(), { cache: 'no-store' }).then(r => {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }).then(raw => {
+    const payload = (raw && raw.docs) ? raw : { docs: raw };
+    const arr = parseDocsRaw(payload.docs);
+    if (!arr.length) throw new Error('backup empty');
+    docs = arr;
+    if (Array.isArray(payload.changelog) && payload.changelog.length) changelog = payload.changelog;
+    if (Array.isArray(payload.trash)) trash = payload.trash;
+    console.log('Backup loaded', arr.length, 'docs');
+  });
+}
+
+// ⑤ Status indicator — green=live, amber=read-only backup/offline
+function paintDataBadge() {
+  if (!_dataSettled) return;
+  const dot = document.getElementById('sdot');
+  const txt = document.getElementById('stext');
+  if (!_readOnly) {
+    if (dot) dot.style.background = '#22c55e';
+    if (txt) txt.textContent = L().saved;
+  } else {
+    if (dot) dot.style.background = '#f59e0b';
+    if (txt) txt.textContent = lang==='en'
+      ? (_dataSource==='backup' ? 'Backup · read-only' : 'Offline · read-only')
+      : (_dataSource==='backup' ? '備援資料 · 唯讀' : '離線快取 · 唯讀');
+  }
 }
 
 function showLoadError(detail) {
@@ -3653,102 +3727,98 @@ function showLoadError(detail) {
     '<div style="color:#dc2626;font-weight:600;margin-bottom:8px">⚠ Failed to load data</div>' +
     '<div style="color:var(--text3);font-size:13px;margin-bottom:12px">Error: ' + (detail||'Unknown') + '</div>' +
     '<button onclick="location.reload()" style="padding:8px 20px;border-radius:6px;border:1px solid var(--border);cursor:pointer;font-size:13px;background:#fff">🔄 Retry</button>' +
-    '<div style="color:var(--text3);font-size:11px;margin-top:12px">If this keeps happening, check your network or try a different Wi-Fi/network.</div>' +
+    '<div style="color:var(--text3);font-size:11px;margin-top:12px">If this keeps happening, check your network, antivirus, or browser extensions.</div>' +
     '</div>';
 }
 
-function init(){
-  applyLang(); buildColorGrids(); buildSlashMenu();
-  setText('stext', L().saved);
-  document.getElementById('sdot').style.background='#22c55e';
+// Real-time sync listeners (only when connected live to Firebase)
+function setupListeners() {
+  if (!window.fbDb || _listenersOn) return;
+  _listenersOn = true;
+  let skip = true;
+  window.fbDb.ref('sop_docs').on('value', snap=>{
+    if(skip){ skip=false; return; }
+    const val = snap.val();
+    if (!val) return;
+    const arr = parseDocsRaw(val);
+    if(!arr.length) return;
+    docs = arr; saveCache(); renderTabs(); renderDoc();
+  });
+  window.fbDb.ref('sop_changelog').on('value', snap=>{
+    const c = toArr(snap.val()); if(c&&c.length) changelog = c;
+  });
+  window.fbDb.ref('sop_trash').on('value', snap=>{
+    const t = toArr(snap.val()); trash = t && t.length ? t : [];
+  });
+}
 
-  // Show loading state on login screen while data loads
-  document.getElementById('loginList').innerHTML = '<div style="text-align:center;padding:20px;color:var(--text3)">載入中... Loading...</div>';
+// Mark which source won, then re-render
+function settle(source) {
+  _dataSettled = true;
+  _dataSource = source;
+  _readOnly = (source !== 'firebase');
+  if (source === 'firebase' || source === 'backup') saveCache();
+  finishInit();
+}
 
-  if(window.fbDb){
-    // Race: try Firebase SDK with 6s timeout, fallback to REST API
-    let loaded = false;
-
-    const sdkLoad = Promise.all([
+// Background: fetch the freshest data. Chain: Firebase SDK → REST → same-origin backup → keep cache
+function loadFreshData() {
+  if (window.fbDb) {
+    let done = false;
+    const sdk = Promise.all([
       window.fbDb.ref('sop_docs').once('value'),
       window.fbDb.ref('sop_changelog').once('value'),
       window.fbDb.ref('sop_trash').once('value')
     ]).then(([docsSnap, clSnap, trashSnap])=>{
-      if (loaded) return; // REST already finished
-      loaded = true;
-      const raw = docsSnap.val();
-      const arr = parseDocsRaw(raw);
+      const arr = parseDocsRaw(docsSnap.val());
       if (arr.length) docs = arr;
       const ca = toArr(clSnap.val());  if(ca&&ca.length) changelog = ca;
       const ta = toArr(trashSnap.val()); if(ta&&ta.length) trash = ta;
+      done = true;
     });
+    const timeout = new Promise((res, rej) => setTimeout(() => done ? res() : rej(new Error('timeout')), 6000));
 
-    // Timeout: if SDK takes >6s, try REST API
-    const timeout = new Promise(resolve => setTimeout(() => {
-      if (!loaded) {
-        console.warn('Firebase SDK timeout, trying REST API...');
-        loadViaRest().then(resolve);
-      } else resolve();
-    }, 6000));
-
-    function tryFinishWithListeners() {
-      // Try localStorage as absolute last resort
-      if (!docs.length) {
-        try{const s=localStorage.getItem('sop_docs');if(s){const p=JSON.parse(s);if(Array.isArray(p)&&p.length)docs=p;}}catch(e){}
-      }
-      if (!docs.length) {
-        showLoadError('Could not reach Firebase. SDK and REST API both failed.');
-        return;
-      }
-      finishInit();
-
-      // Setup real-time sync listeners
-      let skip = true;
-      window.fbDb.ref('sop_docs').on('value', snap=>{
-        if(skip){ skip=false; return; }
-        const val = snap.val();
-        if (!val) return;
-        const arr = parseDocsRaw(val);
-        if(!arr.length) return;
-        docs = arr; renderTabs(); renderDoc();
-      });
-      window.fbDb.ref('sop_changelog').on('value', snap=>{
-        const c = toArr(snap.val()); if(c&&c.length) changelog = c;
-      });
-      window.fbDb.ref('sop_trash').on('value', snap=>{
-        const t = toArr(snap.val()); trash = t && t.length ? t : [];
-      });
-    }
-
-    Promise.race([sdkLoad, timeout]).then(() => {
-      loaded = true;
-      if (!docs.length) return loadViaRest().catch(()=>{});
-    }).then(() => {
-      tryFinishWithListeners();
-    }).catch((err)=>{
-      console.warn('SDK failed:', err);
-      // SDK failed — try REST
+    Promise.race([sdk, timeout]).then(() => {
+      settle('firebase'); setupListeners();
+    }).catch(() => {
+      console.warn('Firebase unreachable, trying REST...');
       loadViaRest().then(() => {
-        tryFinishWithListeners();
+        settle('firebase'); setupListeners();
       }).catch(() => {
-        tryFinishWithListeners(); // will show error if still no docs
+        console.warn('REST failed, trying same-origin backup...');
+        loadViaBackup().then(() => {
+          settle('backup');
+        }).catch(() => {
+          if (_dataReady) { _dataSettled = true; _dataSource = 'cache'; _readOnly = true; finishInit(); }
+          else { _dataSettled = true; showLoadError('Could not reach Firebase or backup. Check network / antivirus / extensions.'); }
+        });
       });
     });
   } else {
-    // No Firebase SDK loaded — try REST API, then localStorage
-    console.warn('Firebase SDK not available, using REST API');
-    loadViaRest().then(() => {
-      if (!docs.length) {
-        try{const s=localStorage.getItem('sop_docs');if(s){const p=JSON.parse(s);if(Array.isArray(p)&&p.length)docs=p;}}catch(e){}
-      }
-      if (docs.length) finishInit();
-      else showLoadError('Firebase SDK failed to load and REST API returned no data.');
+    console.warn('Firebase SDK not available, using same-origin backup');
+    loadViaBackup().then(() => {
+      settle('backup');
     }).catch(() => {
-      try{const s=localStorage.getItem('sop_docs');if(s){const p=JSON.parse(s);if(Array.isArray(p)&&p.length)docs=p;}}catch(e){}
-      if (docs.length) finishInit();
-      else showLoadError('All data sources failed. Please check your internet connection.');
+      if (_dataReady) { _dataSettled = true; _dataSource = 'cache'; _readOnly = true; finishInit(); }
+      else { _dataSettled = true; showLoadError('Firebase unavailable and backup could not be loaded.'); }
     });
   }
+}
+
+function init(){
+  applyLang(); buildColorGrids(); buildSlashMenu();
+  document.getElementById('sdot').style.background='#f59e0b';
+  setText('stext', lang==='en' ? 'Syncing…' : '同步中…');
+
+  // ② Instant first paint from local cache — no blank screen, even fully offline
+  if (loadFromCache()) {
+    finishInit();
+  } else {
+    document.getElementById('loginList').innerHTML = '<div style="text-align:center;padding:20px;color:var(--text3)">載入中... Loading...</div>';
+  }
+
+  // Then upgrade to the freshest available source in the background
+  loadFreshData();
 }
 init();
 
