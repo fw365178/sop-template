@@ -3765,6 +3765,7 @@ function settle(source) {
 function loadFreshData() {
   if (window.fbDb) {
     let done = false;
+    const goLive = () => { if (_dataSource !== 'firebase') { settle('firebase'); } setupListeners(); };
     const sdk = Promise.all([
       window.fbDb.ref('sop_docs').once('value'),
       window.fbDb.ref('sop_changelog').once('value'),
@@ -3776,20 +3777,26 @@ function loadFreshData() {
       const ta = toArr(trashSnap.val()); if(ta&&ta.length) trash = ta;
       done = true;
     });
-    const timeout = new Promise((res, rej) => setTimeout(() => done ? res() : rej(new Error('timeout')), 6000));
+
+    // If Firebase EVER resolves — even slowly, after we already fell back to backup/cache —
+    // upgrade to the live connection and unlock editing. A slow link no longer locks editors out.
+    sdk.then(goLive).catch(()=>{});
+
+    // Give the live connection a generous window before falling back (slow/distant links)
+    const timeout = new Promise((res, rej) => setTimeout(() => done ? res() : rej(new Error('timeout')), 12000));
 
     Promise.race([sdk, timeout]).then(() => {
-      settle('firebase'); setupListeners();
+      goLive();
     }).catch(() => {
-      console.warn('Firebase unreachable, trying REST...');
+      console.warn('Firebase slow/unreachable, trying REST...');
       loadViaRest().then(() => {
-        settle('firebase'); setupListeners();
+        goLive();
       }).catch(() => {
         console.warn('REST failed, trying same-origin backup...');
         loadViaBackup().then(() => {
-          settle('backup');
+          if (_dataSource !== 'firebase') settle('backup');
         }).catch(() => {
-          if (_dataReady) { _dataSettled = true; _dataSource = 'cache'; _readOnly = true; finishInit(); }
+          if (_dataReady) { if (_dataSource !== 'firebase') { _dataSettled = true; _dataSource = 'cache'; _readOnly = true; finishInit(); } }
           else { _dataSettled = true; showLoadError('Could not reach Firebase or backup. Check network / antivirus / extensions.'); }
         });
       });
